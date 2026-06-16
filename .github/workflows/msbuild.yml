@@ -67,8 +67,6 @@ jobs:
             project: Samples/Desktop/D3D12PipelineStateCache/src/D3D12PipelineStateCache.vcxproj
           - name: D3D12PredicationQueries
             project: Samples/Desktop/D3D12PredicationQueries/src/D3D12PredicationQueries.vcxproj
-          - name: D3D12Residency
-            project: Samples/Desktop/D3D12Residency/src/D3D12Residency.vcxproj
           - name: D3D12ReservedResources
             project: Samples/Desktop/D3D12ReservedResources/src/D3D12ReservedResources.vcxproj
           - name: D3D12SmallResources
@@ -83,6 +81,16 @@ jobs:
             project: Samples/Desktop/D3D12nBodyGravity/src/D3D12nBodyGravity.vcxproj
           - name: D3D12xGPU
             project: Samples/Desktop/D3D12xGPU/src/D3D12xGPU.vcxproj
+          # NOTE: The following Desktop samples are intentionally not built in
+          # CI because they depend on sources/headers that are not present in
+          # this repository (e.g. external OMM SDK, the d3dx12Residency helper,
+          # cross-project headers, or HLSL features like Shader Execution
+          # Reordering that require Shader Model 6.9 which the project files
+          # do not currently target):
+          #   - D3D12OMMOfflineBaker  (missing 'omm.hpp')
+          #   - D3D12Residency        (missing 'd3dx12Residency.h' on the include path)
+          #   - D3D12RaytracingSakuraForestSER (HLSL needs SM 6.9 but project targets 6.3)
+          #   - D3D12WavefrontConverter (missing 'D3D12MeshletGenerator.h')
 
           # ---- D3D12HelloWorld sub-samples ----
           - name: D3D12HelloBundles
@@ -135,12 +143,8 @@ jobs:
             project: Samples/Desktop/D3D12MeshShaders/src/MeshletInstancing/D3D12MeshletInstancing.vcxproj
           - name: D3D12MeshletRender
             project: Samples/Desktop/D3D12MeshShaders/src/MeshletRender/D3D12MeshletRender.vcxproj
-          - name: D3D12WavefrontConverter
-            project: Samples/Desktop/D3D12MeshShaders/src/WavefrontConverter/D3D12WavefrontConverter.vcxproj
 
           # ---- D3D12Raytracing sub-samples ----
-          - name: D3D12OMMOfflineBaker
-            project: Samples/Desktop/D3D12Raytracing/src/D3D12OMMOfflineBaker/D3D12OMMOfflineBaker.vcxproj
           - name: D3D12RaytracingHelloShaderExecutionReordering
             project: Samples/Desktop/D3D12Raytracing/src/D3D12RaytracingHelloShaderExecutionReordering/D3D12RaytracingHelloShaderExecutionReordering.vcxproj
           - name: D3D12RaytracingHelloWorld
@@ -149,14 +153,18 @@ jobs:
             project: Samples/Desktop/D3D12Raytracing/src/D3D12RaytracingLibrarySubobjects/D3D12RaytracingLibrarySubobjects.vcxproj
           - name: D3D12RaytracingMiniEngineSample
             project: Samples/Desktop/D3D12Raytracing/src/D3D12RaytracingMiniEngineSample/ModelViewer_VS16.vcxproj
+            # Pulls in MiniEngine sub-projects whose vcxproj files reference
+            # NuGet packages from the repo-root `Packages\` folder. Restore
+            # those packages.config files too so MSBuild can find the props.
+            extraPackagesConfigs: |
+              MiniEngine/Core/packages.config
+              MiniEngine/Model/packages.config
           - name: D3D12RaytracingOpacityMicromaps
             project: Samples/Desktop/D3D12Raytracing/src/D3D12RaytracingOpacityMicromaps/D3D12RaytracingOpacityMicromaps.vcxproj
           - name: D3D12RaytracingProceduralGeometry
             project: Samples/Desktop/D3D12Raytracing/src/D3D12RaytracingProceduralGeometry/D3D12RaytracingProceduralGeometry.vcxproj
           - name: D3D12RaytracingRealTimeDenoisedAmbientOcclusion
             project: Samples/Desktop/D3D12Raytracing/src/D3D12RaytracingRealTimeDenoisedAmbientOcclusion/D3D12RaytracingRealTimeDenoisedAmbientOcclusion.vcxproj
-          - name: D3D12RaytracingSakuraForestSER
-            project: Samples/Desktop/D3D12Raytracing/src/D3D12RaytracingSakuraForestSER/D3D12RaytracingSakuraForestSER.vcxproj
           - name: D3D12RaytracingSimpleLighting
             project: Samples/Desktop/D3D12Raytracing/src/D3D12RaytracingSimpleLighting/D3D12RaytracingSimpleLighting.vcxproj
 
@@ -231,6 +239,34 @@ jobs:
             -PackagesDirectory "${{ steps.detect.outputs.packagesDir }}" `
             -NonInteractive `
             -Verbosity normal
+
+      - name: Restore extra NuGet packages
+        if: ${{ matrix.extraPackagesConfigs != '' }}
+        shell: pwsh
+        run: |
+          # Some samples (e.g. the MiniEngine-based ones) pull in sibling
+          # projects that import NuGet props from the repo-root `Packages\`
+          # directory. Restore those too so MSBuild can find them.
+          $repoRoot = (Resolve-Path ".").Path
+          $repoPackagesDir = Join-Path $repoRoot "Packages"
+          New-Item -ItemType Directory -Force -Path $repoPackagesDir | Out-Null
+
+          $extras = @"
+          ${{ matrix.extraPackagesConfigs }}
+          "@
+          foreach ($line in $extras -split "`n") {
+            $cfg = $line.Trim()
+            if (-not $cfg) { continue }
+            if (-not (Test-Path $cfg)) {
+              Write-Host "Skipping missing extra packages.config: $cfg"
+              continue
+            }
+            Write-Host "Restoring extra: $cfg -> $repoPackagesDir"
+            nuget restore $cfg `
+              -PackagesDirectory $repoPackagesDir `
+              -NonInteractive `
+              -Verbosity normal
+          }
 
       - name: Add NuGet DXC to PATH
         if: steps.detect.outputs.hasConfig == 'true'
