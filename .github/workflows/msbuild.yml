@@ -307,29 +307,36 @@ jobs:
           $projDir = "${{ steps.detect.outputs.projectDir }}"
           $cfg     = $env:BUILD_CONFIGURATION
           $plat    = $env:BUILD_PLATFORM
+          $name    = "${{ matrix.name }}"
 
           # Different vcxproj files use different OutDir conventions. Try the
           # most common ones in order, then fall back to a recursive search
           # for a freshly produced binary under the project directory.
+          $parent = Split-Path -Parent $projDir
           $candidates = @(
             (Join-Path $projDir "bin/$plat/$cfg"),
             (Join-Path $projDir "bin/$cfg"),
-            (Join-Path (Split-Path -Parent $projDir) "bin/$plat/$cfg"),
-            (Join-Path (Split-Path -Parent $projDir) "bin/$cfg")
+            (Join-Path $parent  "bin/$plat/$cfg"),
+            (Join-Path $parent  "bin/$cfg"),
+            # MiniEngine-style: `$(SolutionDir)..\Build\$(Platform)\$(Configuration)\Output\$(ProjectName)\`.
+            # When building the vcxproj directly, SolutionDir resolves to the
+            # project directory, so the output ends up next to the project.
+            (Join-Path $projDir "../Build/$plat/$cfg/Output/$name"),
+            (Join-Path $parent  "Build/$plat/$cfg/Output/$name")
           )
 
           $outDir = $null
           foreach ($c in $candidates) {
             if (Test-Path $c) {
-              $outDir = $c
+              $outDir = (Resolve-Path $c).Path
               break
             }
           }
 
           if (-not $outDir) {
             # Last-resort: pick the directory that contains the most recently
-            # built .exe / .dll under the project tree.
-            $bin = Get-ChildItem $projDir -Recurse -Include *.exe,*.dll -ErrorAction SilentlyContinue |
+            # built .exe / .dll anywhere under the project's parent tree.
+            $bin = Get-ChildItem $parent -Recurse -Include *.exe,*.dll -ErrorAction SilentlyContinue |
               Sort-Object LastWriteTime -Descending |
               Select-Object -First 1
             if ($bin) {
