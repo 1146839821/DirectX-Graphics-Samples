@@ -190,9 +190,16 @@ jobs:
           $projDir = Split-Path -Parent $project
           $content = Get-Content $project -Raw
 
-          # Default: place packages next to the vcxproj.
+          # Some projects use `packages\...`, some use `..\packages\...`,
+          # some use `.\packages\...`, and the Raytracing samples use
+          # `..\..\..\..\..\Packages\...` (note the capital "P", which lives
+          # at the repository root). Pick up the relative prefix from the
+          # very first matching Import in the vcxproj so NuGet restores into
+          # the exact directory the project will look for.
           $relPrefix = "packages"
-          $match = [regex]::Match($content, 'Import\s+Project\s*=\s*"((?:\.\.[\\/])*packages)[\\/]')
+          $match = [regex]::Match(
+            $content,
+            'Import\s+Project\s*=\s*"((?:\.[\\/])?(?:\.\.[\\/])*[Pp]ackages)[\\/]')
           if ($match.Success) {
             $relPrefix = $match.Groups[1].Value
           }
@@ -207,6 +214,7 @@ jobs:
 
           Write-Host "Project       : $project"
           Write-Host "ProjectDir    : $projDir"
+          Write-Host "RelPrefix     : $relPrefix"
           Write-Host "PackagesDir   : $packagesDirAbs"
           Write-Host "PackagesConfig: $packagesConfig (exists=$hasConfig)"
 
@@ -261,16 +269,43 @@ jobs:
         shell: pwsh
         run: |
           $projDir = "${{ steps.detect.outputs.projectDir }}"
-          $outDir  = Join-Path $projDir "bin/x64/$env:BUILD_CONFIGURATION"
-          if (-not (Test-Path $outDir)) {
-            # Some projects emit to <projDir>/../bin/x64/<Config>; try that as a fallback.
-            $altOut = Join-Path (Split-Path -Parent $projDir) "bin/x64/$env:BUILD_CONFIGURATION"
-            if (Test-Path $altOut) {
-              $outDir = $altOut
-            } else {
-              throw "Build output directory was not found. Tried: $outDir and $altOut"
+          $cfg     = $env:BUILD_CONFIGURATION
+          $plat    = $env:BUILD_PLATFORM
+
+          # Different vcxproj files use different OutDir conventions. Try the
+          # most common ones in order, then fall back to a recursive search
+          # for a freshly produced binary under the project directory.
+          $candidates = @(
+            (Join-Path $projDir "bin/$plat/$cfg"),
+            (Join-Path $projDir "bin/$cfg"),
+            (Join-Path (Split-Path -Parent $projDir) "bin/$plat/$cfg"),
+            (Join-Path (Split-Path -Parent $projDir) "bin/$cfg")
+          )
+
+          $outDir = $null
+          foreach ($c in $candidates) {
+            if (Test-Path $c) {
+              $outDir = $c
+              break
             }
           }
+
+          if (-not $outDir) {
+            # Last-resort: pick the directory that contains the most recently
+            # built .exe / .dll under the project tree.
+            $bin = Get-ChildItem $projDir -Recurse -Include *.exe,*.dll -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 1
+            if ($bin) {
+              $outDir = $bin.DirectoryName
+            }
+          }
+
+          if (-not $outDir) {
+            $tried = ($candidates -join "`n  ")
+            throw "Build output directory was not found. Tried:`n  $tried"
+          }
+          Write-Host "Using build output: $outDir"
 
           $stage = Join-Path $env:RUNNER_TEMP "desktop-d3d12-${{ matrix.name }}"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
