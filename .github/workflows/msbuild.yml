@@ -1,0 +1,151 @@
+name: Build Desktop D3D12 Samples
+
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: MSBuild configuration to compile.
+        required: true
+        default: Release
+        type: choice
+        options:
+          - Release
+          - Debug
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - .github/workflows/build-desktop-d3d12-samples.yml
+      - Samples/Desktop/D3D12DynamicIndexing/**
+      - Samples/Desktop/D3D12ExecuteIndirect/**
+      - Samples/Desktop/D3D12HelloWorld/src/HelloConstBuffers/**
+      - Samples/Desktop/D3D12HelloWorld/src/HelloTexture/**
+      - Samples/Desktop/D3D12HelloWorld/src/HelloTriangle/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-d3d12-samples-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_CONFIGURATION: ${{ github.event.inputs.configuration || 'Release' }}
+  BUILD_PLATFORM: x64
+  PLATFORM_TOOLSET: v143
+  WINDOWS_SDK_VERSION: 10.0
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: windows-2022
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: D3D12DynamicIndexing
+            project: Samples/Desktop/D3D12DynamicIndexing/src/D3D12DynamicIndexing.vcxproj
+            packagesConfig: Samples/Desktop/D3D12DynamicIndexing/src/packages.config
+            packagesDir: Samples/Desktop/D3D12DynamicIndexing/src/packages
+            outDir: Samples/Desktop/D3D12DynamicIndexing/src/bin/x64/${{ github.event.inputs.configuration || 'Release' }}
+
+          - name: D3D12ExecuteIndirect
+            project: Samples/Desktop/D3D12ExecuteIndirect/src/D3D12ExecuteIndirect.vcxproj
+            packagesConfig: Samples/Desktop/D3D12ExecuteIndirect/src/packages.config
+            packagesDir: Samples/Desktop/D3D12ExecuteIndirect/src/packages
+            outDir: Samples/Desktop/D3D12ExecuteIndirect/src/bin/x64/${{ github.event.inputs.configuration || 'Release' }}
+
+          - name: D3D12HelloTriangle
+            project: Samples/Desktop/D3D12HelloWorld/src/HelloTriangle/D3D12HelloTriangle.vcxproj
+            packagesConfig: Samples/Desktop/D3D12HelloWorld/src/HelloTriangle/packages.config
+            packagesDir: Samples/Desktop/D3D12HelloWorld/src/packages
+            outDir: Samples/Desktop/D3D12HelloWorld/src/HelloTriangle/bin/x64/${{ github.event.inputs.configuration || 'Release' }}
+
+          - name: D3D12HelloTexture
+            project: Samples/Desktop/D3D12HelloWorld/src/HelloTexture/D3D12HelloTexture.vcxproj
+            packagesConfig: Samples/Desktop/D3D12HelloWorld/src/HelloTexture/packages.config
+            packagesDir: Samples/Desktop/D3D12HelloWorld/src/packages
+            outDir: Samples/Desktop/D3D12HelloWorld/src/HelloTexture/bin/x64/${{ github.event.inputs.configuration || 'Release' }}
+
+          - name: D3D12HelloConstBuffers
+            project: Samples/Desktop/D3D12HelloWorld/src/HelloConstBuffers/D3D12HelloConstBuffers.vcxproj
+            packagesConfig: Samples/Desktop/D3D12HelloWorld/src/HelloConstBuffers/packages.config
+            packagesDir: Samples/Desktop/D3D12HelloWorld/src/packages
+            outDir: Samples/Desktop/D3D12HelloWorld/src/HelloConstBuffers/bin/x64/${{ github.event.inputs.configuration || 'Release' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Show build environment
+        shell: pwsh
+        run: |
+          where.exe msbuild
+          msbuild -version
+          Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Include" |
+            Sort-Object Name -Descending |
+            Select-Object -First 5 -ExpandProperty Name
+
+      - name: Restore NuGet packages
+        shell: pwsh
+        run: |
+          nuget restore "${{ matrix.packagesConfig }}" `
+            -PackagesDirectory "${{ matrix.packagesDir }}" `
+            -NonInteractive `
+            -Verbosity normal
+
+      - name: Add NuGet DXC to PATH
+        shell: pwsh
+        run: |
+          $dxc = Get-ChildItem "${{ matrix.packagesDir }}" -Recurse -Filter dxc.exe |
+            Select-Object -First 1
+          if ($null -eq $dxc) {
+            throw "dxc.exe was not found under ${{ matrix.packagesDir }}"
+          }
+          $dxc.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $dxc.FullName -help | Select-Object -First 1
+
+      - name: Build
+        shell: pwsh
+        run: |
+          msbuild "${{ matrix.project }}" `
+            /m `
+            /t:Build `
+            /p:Configuration="$env:BUILD_CONFIGURATION" `
+            /p:Platform="$env:BUILD_PLATFORM" `
+            /p:PlatformToolset="$env:PLATFORM_TOOLSET" `
+            /p:WindowsTargetPlatformVersion="$env:WINDOWS_SDK_VERSION" `
+            /p:PreferredToolArchitecture=x64 `
+            /v:minimal
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          $outDir = "${{ matrix.outDir }}"
+          if (!(Test-Path $outDir)) {
+            throw "Build output directory was not found: $outDir"
+          }
+
+          $stage = Join-Path $env:RUNNER_TEMP "desktop-d3d12-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -Path (Join-Path $outDir "*") -Destination $stage -Recurse -Force
+
+          Get-ChildItem $stage -Recurse |
+            Select-Object FullName, Length |
+            Format-Table -AutoSize
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-d3d12-${{ matrix.name }}-${{ env.BUILD_PLATFORM }}-${{ env.BUILD_CONFIGURATION }}
+          path: ${{ runner.temp }}/desktop-d3d12-${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 14
